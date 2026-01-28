@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# bin/release <build-dir>
+#
+# Returns YAML metadata for the runtime.
+# Claude Code is a CLI tool, so we don't define default process types.
+
+cat << EOF
+---
+default_process_types: {}
+EOF

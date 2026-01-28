@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+# bin/compile <build-dir> <cache-dir> <env-dir>
+#
+# Installs Claude Code into the Heroku slug.
+
+set -eo pipefail
+
+BUILD_DIR=$1
+CACHE_DIR=$2
+ENV_DIR=$3
+
+# Heroku-style output helpers
+indent() {
+  sed -u 's/^/       /'
+}
+
+arrow() {
+  echo "-----> $1"
+}
+
+# Export environment variables from ENV_DIR
+export_env_dir() {
+  env_dir=$1
+  acceptlist_regex=${2:-''}
+  denylist_regex=${3:-'^(PATH|GIT_DIR|CPATH|CPPATH|LD_PRELOAD|LIBRARY_PATH)$'}
+  if [ -d "$env_dir" ]; then
+    for e in $(ls "$env_dir"); do
+      echo "$e" | grep -E "$acceptlist_regex" | grep -qvE "$denylist_regex" &&
+      export "$e=$(cat "$env_dir/$e")"
+      :
+    done
+  fi
+}
+
+# Export config vars
+export_env_dir "$ENV_DIR"
+
+# Set up directories
+CLAUDE_CODE_DIR="$BUILD_DIR/.claude-code-bin"
+PROFILE_DIR="$BUILD_DIR/.profile.d"
+
+mkdir -p "$CLAUDE_CODE_DIR"
+mkdir -p "$PROFILE_DIR"
+mkdir -p "$CACHE_DIR"
+
+arrow "Installing Claude Code"
+
+# Check if we have a cached version
+CACHE_CLAUDE_DIR="$CACHE_DIR/claude-code"
+INSTALL_FROM_CACHE=false
+
+if [ -d "$CACHE_CLAUDE_DIR" ] && [ -f "$CACHE_CLAUDE_DIR/claude" ]; then
+  # Check cache age (invalidate after 24 hours to get updates)
+  CACHE_AGE_FILE="$CACHE_CLAUDE_DIR/.cache_time"
+  CURRENT_TIME=$(date +%s)
+
+  if [ -f "$CACHE_AGE_FILE" ]; then
+    CACHE_TIME=$(cat "$CACHE_AGE_FILE")
+    AGE=$((CURRENT_TIME - CACHE_TIME))
+    # 86400 seconds = 24 hours
+    if [ $AGE -lt 86400 ]; then
+      INSTALL_FROM_CACHE=true
+      echo "Using cached Claude Code installation" | indent
+    fi
+  fi
+fi
+
+if [ "$INSTALL_FROM_CACHE" = true ]; then
+  cp -r "$CACHE_CLAUDE_DIR"/* "$CLAUDE_CODE_DIR/"
+else
+  echo "Downloading Claude Code installer..." | indent
+
+  # Create a temporary directory for installation
+  TEMP_INSTALL_DIR=$(mktemp -d)
+
+  # Download and run the installer with custom HOME to capture the installation
+  # The installer installs to ~/.claude-code by default
+  export HOME="$TEMP_INSTALL_DIR"
+
+  # Download the installer script
+  INSTALLER_URL="https://claude.ai/install.sh"
+  curl -fsSL "$INSTALLER_URL" -o "$TEMP_INSTALL_DIR/install.sh"
+
+  # Make it executable and run it
+  chmod +x "$TEMP_INSTALL_DIR/install.sh"
+
+  echo "Running Claude Code installer..." | indent
+  bash "$TEMP_INSTALL_DIR/install.sh" 2>&1 | indent || {
+    echo "Warning: Installer returned non-zero exit code, checking if installation succeeded..." | indent
+  }
+
+  # Find where claude was installed
+  if [ -d "$TEMP_INSTALL_DIR/.claude-code" ]; then
+    cp -r "$TEMP_INSTALL_DIR/.claude-code"/* "$CLAUDE_CODE_DIR/"
+    echo "Claude Code installed successfully" | indent
+  elif [ -f "$TEMP_INSTALL_DIR/.local/bin/claude" ]; then
+    # Alternative location
+    mkdir -p "$CLAUDE_CODE_DIR/bin"
+    cp "$TEMP_INSTALL_DIR/.local/bin/claude" "$CLAUDE_CODE_DIR/bin/"
+    echo "Claude Code installed successfully (from .local/bin)" | indent
+  elif command -v claude &> /dev/null; then
+    # Try to find where it was installed
+    CLAUDE_PATH=$(command -v claude)
+    CLAUDE_INSTALL_DIR=$(dirname "$(dirname "$CLAUDE_PATH")")
+    cp -r "$CLAUDE_INSTALL_DIR"/* "$CLAUDE_CODE_DIR/" 2>/dev/null || {
+      mkdir -p "$CLAUDE_CODE_DIR/bin"
+      cp "$CLAUDE_PATH" "$CLAUDE_CODE_DIR/bin/"
+    }
+    echo "Claude Code installed successfully" | indent
+  else
+    # Fallback: try to find any claude binary in temp dir
+    FOUND_CLAUDE=$(find "$TEMP_INSTALL_DIR" -name "claude" -type f 2>/dev/null | head -1)
+    if [ -n "$FOUND_CLAUDE" ]; then
+      mkdir -p "$CLAUDE_CODE_DIR/bin"
+      cp "$FOUND_CLAUDE" "$CLAUDE_CODE_DIR/bin/"
+      echo "Claude Code installed successfully (found at $FOUND_CLAUDE)" | indent
+    else
+      echo "Error: Could not find Claude Code after installation" | indent
+      echo "Temp dir contents:" | indent
+      find "$TEMP_INSTALL_DIR" -type f 2>/dev/null | head -20 | indent
+      exit 1
+    fi
+  fi
+
+  # Clean up temp directory
+  rm -rf "$TEMP_INSTALL_DIR"
+
+  # Update cache
+  rm -rf "$CACHE_CLAUDE_DIR"
+  mkdir -p "$CACHE_CLAUDE_DIR"
+  cp -r "$CLAUDE_CODE_DIR"/* "$CACHE_CLAUDE_DIR/"
+  date +%s > "$CACHE_CLAUDE_DIR/.cache_time"
+  echo "Cached Claude Code for future builds" | indent
+fi
+
+# Display version if possible
+if [ -f "$CLAUDE_CODE_DIR/bin/claude" ]; then
+  chmod +x "$CLAUDE_CODE_DIR/bin/claude"
+  CLAUDE_VERSION=$("$CLAUDE_CODE_DIR/bin/claude" --version 2>/dev/null || echo "unknown")
+  echo "Claude Code version: $CLAUDE_VERSION" | indent
+elif [ -f "$CLAUDE_CODE_DIR/claude" ]; then
+  chmod +x "$CLAUDE_CODE_DIR/claude"
+  CLAUDE_VERSION=$("$CLAUDE_CODE_DIR/claude" --version 2>/dev/null || echo "unknown")
+  echo "Claude Code version: $CLAUDE_VERSION" | indent
+fi
+
+arrow "Creating runtime environment"
+
+# Create .profile.d script to set up PATH at runtime
+cat > "$PROFILE_DIR/claude-code.sh" << 'EOF'
+# Claude Code buildpack - runtime environment setup
+export CLAUDE_CODE_HOME="$HOME/.claude-code-bin"
+
+# Add Claude Code to PATH
+if [ -d "$CLAUDE_CODE_HOME/bin" ]; then
+  export PATH="$CLAUDE_CODE_HOME/bin:$PATH"
+elif [ -d "$CLAUDE_CODE_HOME" ]; then
+  export PATH="$CLAUDE_CODE_HOME:$PATH"
+fi
+
+# Set up Claude Code configuration directory
+export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.config/claude}"
+mkdir -p "$CLAUDE_CONFIG_DIR" 2>/dev/null || true
+EOF
+
+echo "Runtime environment configured" | indent
+
+arrow "Claude Code installation complete"
+echo "Run 'claude' to start using Claude Code" | indent

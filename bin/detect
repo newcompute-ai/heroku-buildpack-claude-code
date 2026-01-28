@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# bin/detect <build-dir>
+#
+# Detects if this buildpack should be applied.
+# Applies if a .claude-code file exists in the app root,
+# or if CLAUDE_CODE_ENABLED config var is set.
+
+BUILD_DIR=$1
+
+# Check for .claude-code marker file
+if [ -f "$BUILD_DIR/.claude-code" ]; then
+  echo "Claude Code"
+  exit 0
+fi
+
+# Check for claude-code in package.json (Node.js apps)
+if [ -f "$BUILD_DIR/package.json" ]; then
+  if grep -q '"claude-code"' "$BUILD_DIR/package.json" 2>/dev/null; then
+    echo "Claude Code"
+    exit 0
+  fi
+fi
+
+# If ENV_DIR exists and contains CLAUDE_CODE_ENABLED, apply the buildpack
+# Note: ENV_DIR is not available in detect, so we use a marker file approach
+# Users should create a .claude-code file to enable this buildpack
+
+exit 1
