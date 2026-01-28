@@ -7,7 +7,7 @@ This buildpack installs [Claude Code](https://claude.ai/product/claude-code), An
 ### 1. Add the buildpack to your app
 
 ```bash
-heroku buildpacks:add https://github.com/YOUR_USERNAME/heroku-buildpack-claude-code
+heroku buildpacks:add https://github.com/newcompute-ai/heroku-buildpack-claude-code
 ```
 
 Or set it in your `app.json`:
@@ -16,22 +16,12 @@ Or set it in your `app.json`:
 {
   "buildpacks": [
     { "url": "heroku/nodejs" },
-    { "url": "https://github.com/YOUR_USERNAME/heroku-buildpack-claude-code" }
+    { "url": "https://github.com/newcompute-ai/heroku-buildpack-claude-code" }
   ]
 }
 ```
 
-### 2. Enable the buildpack
-
-Create a `.claude-code` marker file in your project root:
-
-```bash
-touch .claude-code
-git add .claude-code
-git commit -m "Enable Claude Code buildpack"
-```
-
-### 3. Deploy
+### 2. Deploy
 
 ```bash
 git push heroku main
